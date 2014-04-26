@@ -121,6 +121,7 @@ instance QueryLike Alias where
 	toQuery (Alias dest domain) = toQuery [
 			("type", T.pack "federation"),
 			("destination", dest),
+			("user", dest),
 			("domain", domain)
 		]
 
@@ -143,9 +144,12 @@ instance ToJSON ResolvedAlias where
 instance FromJSON ResolvedAlias where
 	parseJSON (Aeson.Object o) = do
 		o' <- o .: T.pack "federation_json"
+		dest <- o' .:? T.pack "destination"
+		ultimateDest <- case dest of
+			Just (Aeson.String s) -> return s
+			_ -> o' .: T.pack "user"
 		ResolvedAlias <$> (
-				Alias                        <$>
-				(o' .: T.pack "destination") <*>
+				Alias ultimateDest <$>
 				(o' .: T.pack "domain")
 			)                                    <*>
 			(o' .: T.pack "destination_address" >>= readZ) <*>
