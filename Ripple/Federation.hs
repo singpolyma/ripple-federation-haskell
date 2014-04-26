@@ -1,10 +1,18 @@
-module Ripple.Federation where
+module Ripple.Federation (
+	resolve,
+	getRippleTxt,
+	Alias(..),
+	ResolvedAlias(..),
+	-- * Errors
+	Error(..),
+	ErrorType(..),
+	-- * Utils
+	rippleTxtParser
+)where
 
 import Control.Applicative ((<$>), (<*>), (*>), (<*), (<|>), many, some)
 import Control.Monad (guard)
-import Data.Maybe (fromMaybe)
 import Data.Either (rights)
-import Data.List (span)
 import Data.Monoid (Monoid(..))
 import Data.Word (Word32)
 import Control.Error (readZ, fmapLT, throwT, runEitherT, EitherT(..), hoistEither, note)
@@ -19,10 +27,9 @@ import qualified Data.ByteString.Char8 as BS8 -- eww
 
 import Blaze.ByteString.Builder (Builder)
 import Network.URI (URI(..), URIAuth(..), parseAbsoluteURI)
-import Network.HTTP.Types.Status (Status)
-import System.IO.Streams (OutputStream, InputStream, fromLazyByteString)
+import System.IO.Streams (OutputStream, InputStream)
 import System.IO.Streams.Attoparsec (parseFromStream, ParseException(..))
-import Network.Http.Client (withConnection, establishConnection, sendRequest, buildRequest, http, setAccept, setContentType, Response, receiveResponse, RequestBuilder, inputStreamBody, getStatusCode, setAuthorizationBasic, setContentLength, getHeader)
+import Network.Http.Client (withConnection, establishConnection, sendRequest, buildRequest, http, setAccept, Response, receiveResponse, RequestBuilder, setContentLength)
 import qualified Network.Http.Client as HttpStreams
 
 import Network.HTTP.Types.QueryLike (QueryLike(..))
@@ -31,7 +38,6 @@ import Data.Aeson (FromJSON(..), ToJSON(..), object, (.=), (.:), (.:?))
 import qualified Data.Aeson as Aeson
 import qualified Data.Attoparsec.ByteString as Attoparsec
 import qualified Data.Attoparsec.ByteString.Char8 as Attoparsec hiding (takeTill)
-import qualified Data.Attoparsec.Combinator as Attoparsec
 
 -- * Errors and stuff
 
@@ -69,7 +75,7 @@ instance ToJSON ErrorType where
 
 instance FromJSON ErrorType where
 	parseJSON (Aeson.String s) =
-		fromMaybe (fail "Unknown Ripple federation error type.") $ fmap return $
+		maybe (fail "Unknown Ripple federation error type.") return $
 		lookup s [
 			(T.pack "noSuchUser", NoSuchUser),
 			(T.pack "noSupported", NoSupported),
@@ -105,7 +111,7 @@ instance Read Alias where
 		domainchars = ['a'..'z']++['A'..'Z']++['0'..'9']++['-','.']
 		whitespace = [' ', '\t', '\n', '\r']
 		go s = case span (/='@') (dropWhile (`elem` whitespace) s) of
-			(dest, ('@':rest)) ->
+			(dest, '@':rest) ->
 				let (domain, end) = span (`elem` domainchars) rest in
 				[(Alias (T.pack dest) (T.pack domain), end)]
 			_ -> []
@@ -125,7 +131,7 @@ data ResolvedAlias = ResolvedAlias {
 
 instance ToJSON ResolvedAlias where
 	toJSON (ResolvedAlias (Alias dest domain) ripple dt) = object [
-		T.pack "federation_json" .= (object $ [
+		T.pack "federation_json" .= object ([
 				T.pack "type" .= "federation_record",
 				T.pack "destination" .= dest,
 				T.pack "domain" .= domain,
@@ -216,7 +222,7 @@ safeJSONresponse resp i = runEitherT $ do
 			T.pack $ "JSON parser error: " ++ e
 
 parseResponse :: Attoparsec.Parser a -> Response -> InputStream ByteString -> IO (Either Error a)
-parseResponse parser resp i = runUnexceptionalIO $ runEitherT $ do
+parseResponse parser _ i = runUnexceptionalIO $ runEitherT $
 	fmapLT (\e -> handle e (fromException e)) $ fromIO $
 		parseFromStream parser i
 	where
