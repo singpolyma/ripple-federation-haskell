@@ -160,6 +160,11 @@ instance FromJSON ResolvedAlias where
 
 -- | Resolve an alias
 resolve :: Alias -> IO (Either Error ResolvedAlias)
+resolve a@(Alias u domain) | domain == T.pack "ripple.com" = runEitherT $ do
+	FederationResult r <- EitherT $ runUnexceptionalIO $ runEitherT $
+		get (URI "https:" (Just $ URIAuth "" "id.ripple.com" "") ("/v1/user/" ++ T.unpack u) "" "") a
+	RippleNameResponse x <- hoistEither r
+	return x
 resolve a@(Alias _ domain) = runEitherT $ do
 	txt <- EitherT (getRippleTxt domain)
 	uri <- case lookup (T.pack "federation_url") txt of
@@ -250,3 +255,19 @@ oneShotHTTP method uri req body handler = do
 		receiveResponse conn handler
 	where
 	url = BS8.pack $ show uri -- URI can only have ASCII, so should be safe
+
+-- * Temporary stuff to handle centralised Ripple Names hack
+
+newtype RippleNameResponse = RippleNameResponse ResolvedAlias
+
+instance FromJSON RippleNameResponse where
+	parseJSON (Aeson.Object o) = RippleNameResponse <$> (
+		ResolvedAlias <$> (
+				Alias                   <$>
+				(o .: T.pack "username") <*>
+				return (T.pack "ripple.com")
+			)                                    <*>
+			(o .: T.pack "address" >>= readZ) <*>
+			return Nothing
+		)
+	parseJSON _ = fail "Ripple federation records are always objects."
