@@ -97,6 +97,7 @@ instance (FromJSON a) => FromJSON (FederationResult a) where
 
 -- * Aliases: user@domain.tld
 
+-- | destination\@domain
 data Alias = Alias {
 		destination :: Text,
 		domain      :: Text
@@ -153,6 +154,7 @@ instance FromJSON ResolvedAlias where
 
 -- * Resolve aliases
 
+-- | Resolve an alias
 resolve :: Alias -> IO (Either Error ResolvedAlias)
 resolve a@(Alias _ domain) = runEitherT $ do
 	txt <- EitherT (getRippleTxt domain)
@@ -166,7 +168,10 @@ resolve a@(Alias _ domain) = runEitherT $ do
 	FederationResult r <- EitherT $ runUnexceptionalIO $ runEitherT $ get uri a
 	hoistEither r
 
-getRippleTxt :: Text -> IO (Either Error [(Text, [Text])])
+-- | Lookup the ripple.txt for a domain
+getRippleTxt ::
+	Text -- ^ Domain to lookup
+	-> IO (Either Error [(Text, [Text])])
 getRippleTxt domain = runUnexceptionalIO $ runEitherT $
 	tryOne (uri domain')             <|>
 	tryOne (uri ("www." ++ domain')) <|>
@@ -181,6 +186,7 @@ getRippleTxt domain = runUnexceptionalIO $ runEitherT $
 		(setContentLength 0 >> setAccept (BS8.pack "text/plain"))
 		HttpStreams.emptyBody (parseResponse rippleTxtParser)
 
+-- | Attoparsec parser for ripple.txt
 rippleTxtParser :: Attoparsec.Parser [(Text, [Text])]
 rippleTxtParser = some section
 	where
