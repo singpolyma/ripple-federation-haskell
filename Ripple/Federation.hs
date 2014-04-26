@@ -7,8 +7,8 @@ import Data.Either (rights)
 import Data.List (span)
 import Data.Monoid (Monoid(..))
 import Data.Word (Word32)
-import Control.Error (readZ, fmapLT, throwT, runEitherT, EitherT(..), hoistEither)
-import UnexceptionalIO (fromIO, runUnexceptionalIO)
+import Control.Error (readZ, fmapLT, throwT, runEitherT, EitherT(..), hoistEither, note)
+import UnexceptionalIO (fromIO, runUnexceptionalIO, UnexceptionalIO)
 import Control.Exception (fromException)
 import Data.Base58Address (RippleAddress)
 import Data.Text (Text)
@@ -18,7 +18,7 @@ import Data.ByteString (ByteString)
 import qualified Data.ByteString.Char8 as BS8 -- eww
 
 import Blaze.ByteString.Builder (Builder)
-import Network.URI (URI(..), URIAuth(..))
+import Network.URI (URI(..), URIAuth(..), parseAbsoluteURI)
 import Network.HTTP.Types.Status (Status)
 import System.IO.Streams (OutputStream, InputStream, fromLazyByteString)
 import System.IO.Streams.Attoparsec (parseFromStream, ParseException(..))
@@ -35,12 +35,12 @@ import qualified Data.Attoparsec.Combinator as Attoparsec
 
 -- * Errors and stuff
 
-data ErrorType = NoSuchUser | NoSupported | NoSuchDomain | InvalidParams | Unavailable
+data ErrorType = NoSuchUser | NoSupported | NoSuchDomain | InvalidParams | Unavailable deriving (Show, Eq)
 
 data Error = Error {
 		errorType :: ErrorType,
 		errorMessage :: Text
-	} deriving (Show)
+	} deriving (Show, Eq)
 
 instance Monoid Error where
 	mempty = Error Unavailable (T.pack "mempty")
@@ -79,12 +79,22 @@ instance FromJSON ErrorType where
 		]
 	parseJSON _ = fail "Ripple federation error type is always a string."
 
+newtype FederationResult a = FederationResult (Either Error a)
+
+instance (FromJSON a) => FromJSON (FederationResult a) where
+	parseJSON v@(Aeson.Object o) = FederationResult <$> do
+		r <- o .:? T.pack "result"
+		case r of
+			Just x | x == T.pack "error" -> Left <$> Aeson.parseJSON v
+			_ -> Right <$> Aeson.parseJSON v
+	parseJSON _ = fail "Ripple federation results are always objects."
+
 -- * Aliases: user@domain.tld
 
 data Alias = Alias {
 		destination :: Text,
 		domain      :: Text
-	}
+	} deriving (Eq)
 
 instance Show Alias where
 	show (Alias dest domain) = T.unpack dest ++ "@" ++ T.unpack domain
@@ -101,14 +111,17 @@ instance Read Alias where
 			_ -> []
 
 instance QueryLike Alias where
-	toQuery (Alias dest domain) =
-		toQuery [("destination", dest), ("domain", domain)]
+	toQuery (Alias dest domain) = toQuery [
+			("type", T.pack "federation"),
+			("destination", dest),
+			("domain", domain)
+		]
 
 data ResolvedAlias = ResolvedAlias {
 		alias  :: Alias,
 		ripple :: RippleAddress,
 		dt     :: Maybe Word32
-	}
+	} deriving (Show, Eq)
 
 instance ToJSON ResolvedAlias where
 	toJSON (ResolvedAlias (Alias dest domain) ripple dt) = object [
@@ -133,6 +146,19 @@ instance FromJSON ResolvedAlias where
 	parseJSON _ = fail "Ripple federation records are always objects."
 
 -- * Resolve aliases
+
+resolve :: Alias -> IO (Either Error ResolvedAlias)
+resolve a@(Alias _ domain) = runEitherT $ do
+	txt <- EitherT (getRippleTxt domain)
+	uri <- case lookup (T.pack "federation_url") txt of
+		Just [url] -> hoistEither $ note
+			(Error NoSupported (T.pack "federation_url in ripple.txt is invalid"))
+			(parseAbsoluteURI $ T.unpack url)
+		_ ->
+			throwT $ Error NoSupported (T.pack "No federation_url in ripple.txt")
+
+	FederationResult r <- EitherT $ runUnexceptionalIO $ runEitherT $ get uri a
+	hoistEither r
 
 getRippleTxt :: Text -> IO (Either Error [(Text, [Text])])
 getRippleTxt domain = runUnexceptionalIO $ runEitherT $
@@ -171,8 +197,11 @@ rippleTxtParser = some section
 
 -- * Internal Helpers
 
-get :: (QueryLike a, FromJSON b) => URI -> a -> IO (Either Error b)
-get uri payload = oneShotHTTP HttpStreams.GET uri'
+get :: (QueryLike a, FromJSON b) => URI -> a -> EitherT Error UnexceptionalIO b
+get uri payload =
+	(hoistEither =<<) $
+	fmapLT (const $ Error Unavailable (T.pack "Network error")) $ fromIO $
+	oneShotHTTP HttpStreams.GET uri'
 	(setContentLength 0 >> setAccept (BS8.pack "application/json"))
 	HttpStreams.emptyBody safeJSONresponse
 	where
@@ -191,14 +220,14 @@ parseResponse parser resp i = runUnexceptionalIO $ runEitherT $ do
 	fmapLT (\e -> handle e (fromException e)) $ fromIO $
 		parseFromStream parser i
 	where
-	parseError = Error Unavailable (T.pack "Parse error")
-	handle _ (Just (ParseException _)) = parseError
+	parseError e = Error Unavailable (T.pack $ "Parse error: " ++ show e)
+	handle _ (Just (ParseException e)) = parseError e
 	handle e _ = Error Unavailable (T.pack $ "Exception: " ++ show e)
 
 oneShotHTTP :: HttpStreams.Method -> URI -> RequestBuilder () -> (OutputStream Builder -> IO ()) -> (Response -> InputStream ByteString -> IO b) -> IO b
 oneShotHTTP method uri req body handler = do
 	req' <- buildRequest $ do
-		http method (BS8.pack $ uriPath uri)
+		http method (BS8.pack $ uriPath uri ++ uriQuery uri)
 		req
 	withConnection (establishConnection url) $ \conn -> do
 		sendRequest conn req' body
