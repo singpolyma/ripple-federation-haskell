@@ -1,5 +1,6 @@
 module Ripple.Federation (
 	resolve,
+	resolveAgainst,
 	getRippleTxt,
 	Alias(..),
 	ResolvedAlias(..),
@@ -174,6 +175,11 @@ resolve a@(Alias _ domain) = runEitherT $ do
 		_ ->
 			throwT $ Error NoSupported (T.pack "No federation_url in ripple.txt")
 
+	EitherT (a `resolveAgainst` uri)
+
+-- | Resolve an alias against a known federation_url
+resolveAgainst :: Alias -> URI -> IO (Either Error ResolvedAlias)
+resolveAgainst a uri = runEitherT $ do
 	FederationResult r <- EitherT $ runUnexceptionalIO $ runEitherT $ get uri a
 	hoistEither r
 
