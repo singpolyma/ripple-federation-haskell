@@ -1,5 +1,5 @@
 name:            ripple-federation
-version:         0.2
+version:         0.3
 cabal-version:   >= 1.8
 license:         OtherLicense
 license-file:    COPYING
@@ -31,7 +31,7 @@ library
                 aeson,
                 attoparsec,
                 blaze-builder,
-                network,
+                network-uri,
                 http-types,
                 http-streams,
                 io-streams,
