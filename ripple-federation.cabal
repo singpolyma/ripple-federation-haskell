@@ -27,7 +27,7 @@ library
                 base == 4.*,
                 bytestring,
                 text,
-                errors,
+                errors < 2.0,
                 aeson,
                 attoparsec,
                 blaze-builder,
